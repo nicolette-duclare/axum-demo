@@ -130,7 +130,6 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/", get(root_handler))
         .route("/healthz", get(healthz_handler))
         .route("/proxy", get(proxy_handler))
-        .route("/openapi.json", get(openapi_handler))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
         .with_state(state)
 }
@@ -210,18 +209,6 @@ async fn proxy_handler(
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/openapi.json",
-    tag = "axum-demo",
-    responses(
-        (status = 200, description = "Generated OpenAPI specification", body = Value)
-    )
-)]
-async fn openapi_handler() -> impl IntoResponse {
-    Json(ApiDoc::openapi())
-}
-
 fn validate_proxy_url(input: &str) -> Result<Url, String> {
     let url = Url::parse(input).map_err(|e| format!("invalid url: {e}"))?;
 
@@ -284,7 +271,6 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request, routing::get, Json, Router};
     use http_body_util::BodyExt;
-    use serde_json::json;
     use tower::util::ServiceExt;
 
     fn test_state() -> Arc<AppState> {
