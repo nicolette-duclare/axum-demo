@@ -7,10 +7,12 @@ use axum::{
 };
 use local_ip_address::local_ip;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 use tracing::info;
 use url::Url;
+use utoipa::{OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
 
 #[derive(Clone)]
 struct AppState {
@@ -18,26 +20,26 @@ struct AppState {
     client: reqwest::Client,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct ApiResponse<T: Serialize> {
     ok: bool,
     data: T,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct ErrorResponse {
     ok: bool,
     error: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct HelloData {
     message: String,
     service: String,
     version: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct HealthData {
     status: String,
     uptime_seconds: u64,
@@ -49,18 +51,46 @@ struct HealthData {
     version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 struct ProxyParams {
+    /// Absolute http(s) URL returning JSON.
     url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct ProxyData {
     proxied_url: String,
     status: u16,
     content_type: Option<String>,
     body: Value,
 }
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(root_handler, healthz_handler, proxy_handler, openapi_handler),
+    components(
+        schemas(
+            ApiResponse<HelloData>,
+            ApiResponse<HealthData>,
+            ApiResponse<ProxyData>,
+            ErrorResponse,
+            HelloData,
+            HealthData,
+            ProxyData
+        )
+    ),
+    tags(
+        (name = "axum-demo", description = "Ready-to-use Axum JSON demo API")
+    ),
+    info(
+        title = "axum-demo API",
+        version = "0.1.0",
+        description = "Demo Axum service with JSON responses, health checks, proxying, and generated OpenAPI docs."
+    )
+)]
+struct ApiDoc;
+
+use utoipa::IntoParams;
 
 #[tokio::main]
 async fn main() {
@@ -94,13 +124,25 @@ async fn main() {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
+    let openapi = ApiDoc::openapi();
+
     Router::new()
         .route("/", get(root_handler))
         .route("/healthz", get(healthz_handler))
         .route("/proxy", get(proxy_handler))
+        .route("/openapi.json", get(openapi_handler))
+        .merge(SwaggerUi::new("/docs").url("/openapi.json", openapi))
         .with_state(state)
 }
 
+#[utoipa::path(
+    get,
+    path = "/",
+    tag = "axum-demo",
+    responses(
+        (status = 200, description = "Hello endpoint", body = ApiResponse<HelloData>)
+    )
+)]
 async fn root_handler() -> impl IntoResponse {
     Json(ApiResponse {
         ok: true,
@@ -112,6 +154,14 @@ async fn root_handler() -> impl IntoResponse {
     })
 }
 
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "axum-demo",
+    responses(
+        (status = 200, description = "Server health and runtime status", body = ApiResponse<HealthData>)
+    )
+)]
 async fn healthz_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let uptime_seconds = state.started_at.elapsed().as_secs();
     let ip_address = local_ip()
@@ -136,6 +186,17 @@ async fn healthz_handler(State(state): State<Arc<AppState>>) -> impl IntoRespons
     })
 }
 
+#[utoipa::path(
+    get,
+    path = "/proxy",
+    tag = "axum-demo",
+    params(ProxyParams),
+    responses(
+        (status = 200, description = "Proxied upstream JSON payload", body = ApiResponse<ProxyData>),
+        (status = 400, description = "Invalid proxy target", body = ErrorResponse),
+        (status = 502, description = "Upstream request or JSON parsing failed", body = ErrorResponse)
+    )
+)]
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ProxyParams>,
@@ -147,6 +208,18 @@ async fn proxy_handler(
         },
         Err(message) => error_response(StatusCode::BAD_REQUEST, &message),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/openapi.json",
+    tag = "axum-demo",
+    responses(
+        (status = 200, description = "Generated OpenAPI specification", body = Value)
+    )
+)]
+async fn openapi_handler() -> impl IntoResponse {
+    Json(ApiDoc::openapi())
 }
 
 fn validate_proxy_url(input: &str) -> Result<Url, String> {
@@ -277,9 +350,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openapi_json_is_available() {
+        let app = build_router(test_state());
+
+        let response = app
+            .oneshot(Request::builder().uri("/openapi.json").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(body["openapi"], "3.1.0");
+        assert!(body["paths"]["/"].is_object());
+        assert!(body["paths"]["/healthz"].is_object());
+        assert!(body["paths"]["/proxy"].is_object());
+    }
+
+    #[tokio::test]
     async fn fetch_json_helper_parses_upstream_json() {
         async fn upstream() -> Json<Value> {
-            Json(json!({"hello": "world"}))
+            Json(serde_json::json!({"hello": "world"}))
         }
 
         let upstream_app = Router::new().route("/demo", get(upstream));
