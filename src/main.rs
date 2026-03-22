@@ -67,7 +67,7 @@ struct ProxyData {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(root_handler, healthz_handler, proxy_handler, openapi_handler),
+    paths(root_handler, healthz_handler, proxy_handler),
     components(
         schemas(
             ApiResponse<HelloData>,
